@@ -6,28 +6,19 @@
 #define KEY_SIZE 32
 #define IV_SIZE 16
 #define SALT_SIZE 8
-#define __PRINT_DEBUG__
-//#undef __PRINT_DEBUG__
+//#define __PRINT_DEBUG__
 
-int decrypt_def_openssl_encoded_content(const unsigned char* encrypted, int len, const char* szPassword )
+int decrypt_def_openssl_encoded_content(const unsigned char* encrypted, int len, const char* szPassword, unsigned char** cache_hosts, int* outLen)
 {
-    FILE *wfp = fopen("output.dec","wb");
     unsigned int srcRemain;
-    unsigned int outLen;
     unsigned char key[KEY_SIZE];
     unsigned char iv[IV_SIZE];
     unsigned char salt[SALT_SIZE];
     unsigned char* pEnc;
-    unsigned char* decBuf = malloc(len);
+    int tmpLen = 0;
     int ret = -1;
 
     EVP_CIPHER_CTX *ctx = NULL;
-
-    if (wfp == NULL) {
-        fprintf(stderr,"[ERROR] %d can not fopen('%s')\n", __LINE__, "output.dec");
-        return -1;
-
-    }
 
     // 암호화된 파일은 salt가 적용되어 있기 때문에 16byte 보다는 큼.
     // ==> Salt signature(8byte) + Salt data(8byte) = 총 16byte
@@ -80,17 +71,18 @@ int decrypt_def_openssl_encoded_content(const unsigned char* encrypted, int len,
     // 복호화시에 Salt signature(8byte) + Salt data(8byte)는 포함하지 않는다.
     srcRemain = len - (SALT_SIZE * 2);
     pEnc = (unsigned char*)encrypted + (SALT_SIZE * 2);
-    memset(decBuf, 0x0, sizeof(decBuf));
-    if (1 != EVP_DecryptUpdate(ctx, decBuf, &outLen, pEnc, srcRemain)) {
+    *cache_hosts = malloc(len);
+    if (1 != EVP_DecryptUpdate(ctx, *cache_hosts, outLen, pEnc, srcRemain)) {
         fprintf(stderr, "error while decrypting\n");
         goto last;
     }
 
-    fwrite(decBuf ,1 ,outLen + 8 ,wfp);
-    if (1 != EVP_DecryptFinal_ex(ctx, decBuf, &outLen)) {
+    if (1 != EVP_DecryptFinal_ex(ctx, *cache_hosts + *outLen, &tmpLen)) {
         fprintf(stderr, "error while final can be invalid password, or corrupted\n");
         goto last;
     }
+
+    *outLen += tmpLen;
 
     ret = 0;
 
@@ -100,15 +92,10 @@ int decrypt_def_openssl_encoded_content(const unsigned char* encrypted, int len,
         EVP_CIPHER_CTX_free(ctx);
     }
 
-    if (wfp) {
-        fclose(wfp);
-        wfp = NULL;
-    }
-
     return ret;
 }
 
-int decrypt_def_openssl_encoded_file(const char* szEncFileName, const char* szPassword) {
+int decrypt_def_openssl_encoded_file(const char* szEncFileName, const char* szPassword, unsigned char** cache_hosts, int * outLen) {
     FILE* fp = fopen(szEncFileName, "rb");
     unsigned char* encContent = NULL;
     unsigned int fileSize;
@@ -125,9 +112,12 @@ int decrypt_def_openssl_encoded_file(const char* szEncFileName, const char* szPa
     encContent = (unsigned char*)malloc(fileSize);
 
     fseek(fp, 0, SEEK_SET);
-    fread(encContent, 1, fileSize, fp);
+    if (0 >= fread(encContent, fileSize, 1, fp)) {
+        fprintf(stderr, "file does not read : ferror(%d)", ferror(fp));
+        goto last;
+    }
 
-    ret = decrypt_def_openssl_encoded_content(encContent, fileSize, szPassword);
+    ret = decrypt_def_openssl_encoded_content(encContent, fileSize, szPassword, cache_hosts, outLen);
 
     last:
 
@@ -145,12 +135,19 @@ int decrypt_def_openssl_encoded_file(const char* szEncFileName, const char* szPa
 
 int main(int argc, char *args[])
 {
+    unsigned char *cache_hosts = NULL;
+    int outLen = 0;
+
     if (argc != 3) {
-        printf("[Usage] %s test.txt password\n",args[0]);
+        printf("[Usage] %s [test.enc] [password]\n",args[0]);
         return -1;
     }
 
-    decrypt_def_openssl_encoded_file(args[1], args[2]);
+    decrypt_def_openssl_encoded_file(args[1], args[2], &cache_hosts, &outLen);
+
+    FILE *f = fopen("output.dec", "w");
+
+    fwrite(cache_hosts, outLen, 1, f);
 
     return 0;
 }
